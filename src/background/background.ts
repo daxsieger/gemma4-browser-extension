@@ -20,6 +20,7 @@ import {
   openUrlTool,
 } from "./tools/tabActions.ts";
 import FeatureExtractor from "./utils/FeatureExtractor.ts";
+import VoiceIntentClassifier from "./utils/VoiceIntentClassifier.ts";
 import VectorHistory from "./vectorHistory/VectorHistory.ts";
 
 import Tab = chrome.tabs.Tab;
@@ -38,8 +39,10 @@ const onModelDownloadProgress = (modelId: string, percentage: number) => {
 };
 
 const featureExtractor = new FeatureExtractor();
+const voiceIntentClassifier = new VoiceIntentClassifier(featureExtractor);
 const vectorHistory = new VectorHistory(featureExtractor);
 let currentAgent: Agent | null = null;
+let activeAgentRun: Promise<any> | null = null;
 
 const availableTools: Record<string, () => any> = {
   [AvailableTools.GET_OPEN_TABS]: () => getOpenTabsTool,
@@ -156,16 +159,42 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === BackgroundTasks.AGENT_GENERATE_TEXT) {
     const agent = getAgent();
-    agent
-      .runAgent(message.prompt)
-      .then((metrics) => {
-        sendResponse({ status: ResponseStatus.SUCCESS, metrics });
-      })
-      .catch((error: Error) => {
-        console.error("GENERATE_TEXT failed:", error);
-        sendResponse({ status: ResponseStatus.ERROR, error: error.message });
-      });
 
+    (async () => {
+      try {
+        if (activeAgentRun) {
+          agent.interrupt();
+          await activeAgentRun.catch(() => {});
+        }
+
+        const runPromise = agent.runAgent(message.prompt);
+        activeAgentRun = runPromise;
+
+        const metrics = await runPromise;
+        if (activeAgentRun === runPromise) {
+          activeAgentRun = null;
+        }
+
+        sendResponse({ status: ResponseStatus.SUCCESS, metrics });
+      } catch (error) {
+        if (activeAgentRun) {
+          activeAgentRun = null;
+        }
+        console.error("GENERATE_TEXT failed:", error);
+        sendResponse({
+          status: ResponseStatus.ERROR,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+
+    return true;
+  }
+
+  if (message.type === BackgroundTasks.AGENT_INTERRUPT) {
+    const agent = getAgent();
+    agent.interrupt();
+    sendResponse({ status: ResponseStatus.SUCCESS });
     return true;
   }
 
@@ -178,9 +207,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === BackgroundTasks.VOICE_CLASSIFY_INTENT) {
+    voiceIntentClassifier
+      .classify({
+        prompt: message.prompt,
+        assistantContext: message.assistantContext,
+      })
+      .then((result) => {
+        sendResponse({ status: ResponseStatus.SUCCESS, result });
+      })
+      .catch((error: Error) => {
+        console.error("VOICE_CLASSIFY_INTENT failed:", error);
+        sendResponse({ status: ResponseStatus.ERROR, error: error.message });
+      });
+
+    return true;
+  }
+
   if (message.type === BackgroundTasks.AGENT_CLEAR) {
     const agent = getAgent();
     agent.clear();
+    activeAgentRun = null;
     sendResponse({ status: ResponseStatus.SUCCESS });
     return true;
   }

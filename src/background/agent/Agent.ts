@@ -1,5 +1,6 @@
 import {
   DynamicCache,
+  InterruptableStoppingCriteria,
   TextGenerationPipeline,
   TextStreamer,
   pipeline,
@@ -71,6 +72,8 @@ const getTextGenerationPipeline = async (
 class Agent {
   private pastKeyValues: DynamicCache | null = null;
   private messages: Array<Message> = createInitialMessages();
+  private currentStoppingCriteria: InterruptableStoppingCriteria | null = null;
+  private interruptRequested = false;
   private _chatMessages: Array<ChatMessage> = [];
   private chatMessagesListener: Array<
     (chatMessages: Array<ChatMessage>) => void
@@ -106,6 +109,10 @@ class Agent {
   ): Promise<{ text: string; metrics: GenerationMetrics }> => {
     const start = performance.now();
     let firstTokenAt: number | null = null;
+    const stoppingCriteria = new InterruptableStoppingCriteria();
+
+    this.currentStoppingCriteria = stoppingCriteria;
+    this.interruptRequested = false;
 
     if (!this.messages.some(({ role }) => role === "system")) {
       this.messages = [...createInitialMessages(), ...this.messages];
@@ -152,8 +159,13 @@ class Agent {
       past_key_values: this.pastKeyValues,
       max_new_tokens: 1024,
       do_sample: false,
+      stopping_criteria: stoppingCriteria,
       streamer,
     });
+
+    if (this.currentStoppingCriteria === stoppingCriteria) {
+      this.currentStoppingCriteria = null;
+    }
 
     const promptLength = Number(input.input_ids.dims.at(-1) ?? 0);
     const finalGeneratedText = output?.[0]?.generated_text;
@@ -318,6 +330,11 @@ class Agent {
       const { toolCalls, message } = extractToolCalls(finalResponse);
       messageInThisAgentRun = message;
 
+      if (this.interruptRequested) {
+        prompt = null;
+        break;
+      }
+
       if (toolCalls.length === 0) {
         prompt = null;
       } else {
@@ -418,10 +435,16 @@ class Agent {
   };
 
   public clear() {
+    this.interrupt();
     this.messages = createInitialMessages();
     void this.pastKeyValues?.dispose();
     this.pastKeyValues = null;
     this.chatMessages = [];
+  }
+
+  public interrupt() {
+    this.interruptRequested = true;
+    this.currentStoppingCriteria?.interrupt();
   }
 }
 

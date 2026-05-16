@@ -71,11 +71,63 @@ For active development with automatic rebuilding:
 pnpm run dev
 ```
 
+To run a guided manual test for the voice integration while `pnpm dev` is running:
+
+```bash
+pnpm run voice:wizard
+```
+
 ### Usage
 
 1. Click the extension icon to open the sidebar panel
 2. On first use, the models will download automatically (one-time)
 3. Once loaded, interact with the AI agent through the chat interface
+
+### Voice Interaction
+
+The sidebar chat now supports local voice input with automatic pause detection.
+
+- Click the microphone button next to the chat input to start listening.
+- The extension requests microphone access directly from the side panel.
+- Spoken text is appended to the chat input.
+- If `Voice pause` is set to a time value, the assistant automatically sends the current spoken segment after that amount of silence.
+- If `Voice pause` is set to `Manual`, the microphone stays active and nothing is sent until you press `Send`.
+- While the assistant is responding, new speech can interrupt the current generation and replace it with a newer voice request.
+- The microphone tries to remain active across browser-driven `SpeechRecognition` restarts and only stops when:
+    - you click the stop button,
+    - microphone access is denied or unavailable,
+    - the local voice intent classifier detects that your final prompt is a genuine closing or farewell.
+
+#### Voice Settings
+
+The sidebar header includes a `Voice pause` selector:
+
+- `Manual`: never auto-send spoken text
+- `1.5s`, `2.5s`, `4.0s`, `6.0s`: auto-send after that amount of silence
+
+The selected value is saved in `chrome.storage.local` and reused on the next session.
+
+#### Local Voice Intent Classification
+
+Microphone shutdown after a spoken prompt is decided locally on-device.
+
+- The background script uses the existing feature-extraction pipeline to embed the spoken prompt and recent assistant context.
+- A local classifier compares that embedding against `continue conversation` and `close conversation` examples.
+- This prevents simple phrases like `grazie, ma continua` from being treated as a final farewell.
+
+#### Manual Voice Test
+
+Recommended flow for testing voice behavior:
+
+1. Run `pnpm run dev`.
+2. Load or reload the unpacked extension from `dist`.
+3. Run `pnpm run voice:wizard` in a second terminal.
+4. Verify these cases:
+     - pause-triggered auto-send
+     - manual mode without auto-send
+     - interruption of an in-progress response by newer speech
+     - microphone persistence across unexpected recognition restarts
+     - microphone shutdown only on manual stop or genuine closing prompts
 
 ### Permissions
 
