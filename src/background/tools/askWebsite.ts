@@ -2,6 +2,38 @@ import { ContentTasks, WebsitePart } from "../../shared/types.ts";
 import { WebMCPTool } from "../agent/webMcp.tsx";
 import FeatureExtractor from "../utils/FeatureExtractor.ts";
 
+const isMissingReceiverError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return (
+    message.includes("Could not establish connection") ||
+    message.includes("Receiving end does not exist")
+  );
+};
+
+const ensureContentScriptLoaded = async (tabId: number) => {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+};
+
+const sendMessageToTab = async <TResponse>(
+  tabId: number,
+  message: unknown
+): Promise<TResponse> => {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    if (!isMissingReceiverError(error)) {
+      throw error;
+    }
+
+    await ensureContentScriptLoaded(tabId);
+    return await chrome.tabs.sendMessage(tabId, message);
+  }
+};
+
 class WebsiteContentManager {
   private currentPageParts: WebsitePart[] = [];
   private featureExtractor: FeatureExtractor;
@@ -59,6 +91,14 @@ class WebsiteContentManager {
     this.currentUrl = url;
 
     this.loadCurrentPage().catch((error) => {
+      if (isMissingReceiverError(error)) {
+        console.warn(
+          "Skipped page content load because the content script is not available yet.",
+          error
+        );
+        return;
+      }
+
       console.error("Failed to load page content:", error);
     });
   }
@@ -93,9 +133,12 @@ class WebsiteContentManager {
 
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const response = await chrome.tabs.sendMessage(tabId, {
+    const response = await sendMessageToTab<{ parts: Array<WebsitePart> }>(
+      tabId,
+      {
       type: ContentTasks.EXTRACT_PAGE_DATA,
-    });
+      }
+    );
 
     const parts = response.parts as Array<WebsitePart>;
 
@@ -269,7 +312,7 @@ export const highlightWebsiteElementTool: WebMCPTool = {
         return "Error: No active tab found";
       }
 
-      await chrome.tabs.sendMessage(tab.id, {
+      await sendMessageToTab(tab.id, {
         type: ContentTasks.HIGHLIGHT_ELEMENTS,
         payload: {
           id,

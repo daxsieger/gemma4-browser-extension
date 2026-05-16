@@ -87,6 +87,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         sidebar: resolve(__dirname, "src/sidebar/index.html"),
+        voiceDebug: resolve(__dirname, "web-debug.html"),
         background: resolve(__dirname, "src/background/background.ts"),
         content: resolve(__dirname, "src/content/content.ts"),
       },

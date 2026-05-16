@@ -1,4 +1,4 @@
-import { Hammer, Mic, Square } from "lucide-react";
+import { CircleHelp, Hammer, Mic, Square } from "lucide-react";
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 
@@ -9,11 +9,33 @@ import {
   ChatMessage,
   ResponseStatus,
 } from "../../shared/types.ts";
-import { Button, InputText } from "../theme";
+import { Button, InputText, Modal } from "../theme";
 import cn from "../utils/classnames.ts";
 import ChatCommands, { ChatCommandsRef, Command } from "./ChatCommands.tsx";
 import ChatToolsModal from "./ChatToolsModal.tsx";
 import MessageContent from "./MessageContent.tsx";
+import {
+  getSpeechChunks,
+  isSpeechEngineWedged,
+  queueSpeechText,
+  type TtsErrorDetails,
+  type TtsStyle,
+  isSpeechSynthesisSupported,
+  speakText,
+  stopSpeech,
+} from "./tts.ts";
+
+const WEDGE_RECOVERY_MESSAGE =
+  "Il motore vocale di Chrome è bloccato. Riavvia il browser per ripristinarlo.";
+
+const stopSpeechWithWedgeCheck = (onWedged: () => void) => {
+  stopSpeech();
+  window.setTimeout(() => {
+    if (isSpeechEngineWedged()) {
+      onWedged();
+    }
+  }, 500);
+};
 
 interface FormParams {
   input: string;
@@ -90,10 +112,17 @@ const getVoiceErrorMessage = (error: string) => {
 
 interface ChatProps {
   voiceResponseDelayMs: number | null;
+  ttsAutoplay: boolean;
+  ttsStyle: TtsStyle;
+  ttsVoiceUri: string;
 }
 
 const getVoiceProgressClassName = (voiceResponseDelayMs: number | null) => {
   switch (voiceResponseDelayMs) {
+    case 500:
+      return "voice-response-progress-500";
+    case 1000:
+      return "voice-response-progress-1000";
     case 1500:
       return "voice-response-progress-1500";
     case 4000:
@@ -105,7 +134,20 @@ const getVoiceProgressClassName = (voiceResponseDelayMs: number | null) => {
   }
 };
 
-export default function Chat({ voiceResponseDelayMs }: ChatProps) {
+const getAssistantSpeechKey = (message: ChatMessage, index: number) => {
+  if (message.role !== "assistant") {
+    return `${index}:user`;
+  }
+
+  return `${index}:${message.metrics.totalMs}:${message.content}`;
+};
+
+export default function Chat({
+  voiceResponseDelayMs,
+  ttsAutoplay,
+  ttsStyle,
+  ttsVoiceUri,
+}: ChatProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const commandsRef = useRef<ChatCommandsRef>(null);
@@ -115,6 +157,18 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
   const voiceCountdownIntervalRef = useRef<number | null>(null);
   const recognitionRestartTimeoutRef = useRef<number | null>(null);
   const desiredListeningRef = useRef<boolean>(false);
+  const initialAssistantSpeechKeyRef = useRef<string | null>(null);
+  const lastAutoSpokenKeyRef = useRef<string | null>(null);
+  const pendingAutoplayRequestIdRef = useRef<number | null>(null);
+  const streamingSpeechStateRef = useRef<{
+    requestId: number | null;
+    messageIndex: number | null;
+    spokenChunks: string[];
+  }>({
+    requestId: null,
+    messageIndex: null,
+    spokenChunks: [],
+  });
   const activeRequestIdRef = useRef<number>(0);
   const voiceRecognitionBaselineRef = useRef<string>("");
   const latestRecognitionTranscriptRef = useRef<string>("");
@@ -137,7 +191,10 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
   const [showCommands, setShowCommands] = useState<boolean>(false);
   const [toolsOpen, setToolsOpen] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
+  const [activeSpeechKey, setActiveSpeechKey] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [ttsErrorDetails, setTtsErrorDetails] = useState<TtsErrorDetails | null>(null);
+  const [isTtsErrorModalOpen, setIsTtsErrorModalOpen] = useState<boolean>(false);
   const [voiceCountdownMs, setVoiceCountdownMs] = useState<number | null>(null);
   const [voiceCountdownRun, setVoiceCountdownRun] = useState<number>(0);
 
@@ -312,8 +369,19 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
 
       const requestId = activeRequestIdRef.current + 1;
       activeRequestIdRef.current = requestId;
+      pendingAutoplayRequestIdRef.current = ttsAutoplay ? requestId : null;
+      streamingSpeechStateRef.current = {
+        requestId: ttsAutoplay ? requestId : null,
+        messageIndex: null,
+        spokenChunks: [],
+      };
       setIsLoading(true);
       setVoiceError(null);
+
+      if (ttsAutoplay) {
+        stopSpeechWithWedgeCheck(() => setVoiceError(WEDGE_RECOVERY_MESSAGE));
+        setActiveSpeechKey(null);
+      }
 
       inputRef.current?.focus();
 
@@ -371,6 +439,20 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
         type: BackgroundTasks.AGENT_GET_MESSAGES,
       },
       (resp) => {
+        const latestAssistantMessage = [...(resp.messages || [])]
+          .reverse()
+          .find((message) => message.role === "assistant" && message.metrics.tokensPerSecond > 0);
+
+        if (latestAssistantMessage) {
+          const hydratedIndex = resp.messages.lastIndexOf(latestAssistantMessage);
+          const hydratedSpeechKey = getAssistantSpeechKey(
+            latestAssistantMessage,
+            hydratedIndex
+          );
+          initialAssistantSpeechKeyRef.current = hydratedSpeechKey;
+          lastAutoSpokenKeyRef.current = hydratedSpeechKey;
+        }
+
         setMessages(resp.messages);
       }
     );
@@ -385,6 +467,102 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (
+      !ttsAutoplay ||
+      !isSpeechSynthesisSupported() ||
+      pendingAutoplayRequestIdRef.current === null
+    ) {
+      return;
+    }
+
+    const latestAssistantIndex = [...messages]
+      .map((message, index) => ({ message, index }))
+      .reverse()
+      .find(
+        ({ message }) =>
+          message.role === "assistant" && message.content.trim().length > 0
+      );
+
+    if (!latestAssistantIndex || latestAssistantIndex.message.role !== "assistant") {
+      return;
+    }
+
+    const streamingState = streamingSpeechStateRef.current;
+
+    if (
+      streamingState.requestId !== pendingAutoplayRequestIdRef.current ||
+      streamingState.messageIndex !== latestAssistantIndex.index
+    ) {
+      streamingSpeechStateRef.current = {
+        requestId: pendingAutoplayRequestIdRef.current,
+        messageIndex: latestAssistantIndex.index,
+        spokenChunks: [],
+      };
+    }
+
+    const includeIncompleteTail =
+      !isLoading && latestAssistantIndex.message.metrics.totalMs > 0;
+    const speechChunks = getSpeechChunks(latestAssistantIndex.message.content, {
+      includeIncompleteTail,
+    });
+
+    let sharedPrefixLength = 0;
+    while (
+      sharedPrefixLength < streamingSpeechStateRef.current.spokenChunks.length &&
+      sharedPrefixLength < speechChunks.length &&
+      streamingSpeechStateRef.current.spokenChunks[sharedPrefixLength] ===
+        speechChunks[sharedPrefixLength]
+    ) {
+      sharedPrefixLength += 1;
+    }
+
+    const newChunks = speechChunks.slice(sharedPrefixLength);
+
+    if (newChunks.length === 0) {
+      if (includeIncompleteTail) {
+        pendingAutoplayRequestIdRef.current = null;
+      }
+      return;
+    }
+
+    const latestSpeechKey = getAssistantSpeechKey(
+      latestAssistantIndex.message,
+      latestAssistantIndex.index
+    );
+
+    if (latestSpeechKey === initialAssistantSpeechKeyRef.current) {
+      pendingAutoplayRequestIdRef.current = null;
+      return;
+    }
+
+    streamingSpeechStateRef.current.spokenChunks = [...speechChunks];
+    lastAutoSpokenKeyRef.current = latestSpeechKey;
+
+    queueSpeechText({
+      text: newChunks.join(" "),
+      style: ttsStyle,
+      voiceUri: ttsVoiceUri,
+      onStart: () => {
+        setActiveSpeechKey(latestSpeechKey);
+        setVoiceError(null);
+        setTtsErrorDetails(null);
+      },
+      onEnd: () => {
+        setActiveSpeechKey((currentKey) =>
+          currentKey === latestSpeechKey ? null : currentKey
+        );
+      },
+      onError: (message, details) => {
+        setVoiceError(message);
+        setTtsErrorDetails(details);
+        setActiveSpeechKey((currentKey) =>
+          currentKey === latestSpeechKey ? null : currentKey
+        );
+      },
+    });
+  }, [isLoading, messages, ttsAutoplay, ttsStyle, ttsVoiceUri]);
 
   useEffect(() => {
     const SpeechRecognitionApi =
@@ -453,6 +631,7 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
     return () => {
       clearVoiceCountdown();
       clearRecognitionRestart();
+      stopSpeech();
       desiredListeningRef.current = false;
       voiceRecognitionBaselineRef.current = "";
       latestRecognitionTranscriptRef.current = "";
@@ -534,6 +713,43 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
     submitPrompt(data.input, { keepListening: isListening });
   };
 
+  const handleToggleSpeech = (messageKey: string, content: string) => {
+    if (!isSpeechSynthesisSupported()) {
+      setVoiceError("Speech synthesis is not supported in this browser.");
+      return;
+    }
+
+    if (activeSpeechKey === messageKey) {
+      stopSpeechWithWedgeCheck(() => setVoiceError(WEDGE_RECOVERY_MESSAGE));
+      setActiveSpeechKey(null);
+      return;
+    }
+
+    speakText({
+      text: content,
+      style: ttsStyle,
+      voiceUri: ttsVoiceUri,
+      preferImmediateStart: true,
+      onStart: () => {
+        setActiveSpeechKey(messageKey);
+        setVoiceError(null);
+        setTtsErrorDetails(null);
+      },
+      onEnd: () => {
+        setActiveSpeechKey((currentKey) =>
+          currentKey === messageKey ? null : currentKey
+        );
+      },
+      onError: (message, details) => {
+        setVoiceError(message);
+        setTtsErrorDetails(details);
+        setActiveSpeechKey((currentKey) =>
+          currentKey === messageKey ? null : currentKey
+        );
+      },
+    });
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div
@@ -565,6 +781,16 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
                     content={message.content}
                     tools={message.tools}
                     metrics={message.metrics}
+                    canSpeak={Boolean(message.content)}
+                    isSpeaking={
+                      activeSpeechKey === getAssistantSpeechKey(message, index)
+                    }
+                    onToggleSpeech={() =>
+                      handleToggleSpeech(
+                        getAssistantSpeechKey(message, index),
+                        message.content
+                      )
+                    }
                   />
                 )}
               </div>
@@ -666,14 +892,73 @@ export default function Chat({ voiceResponseDelayMs }: ChatProps) {
             </div>
           )}
           {(voiceError || isListening) && (
-            <p className="text-xs text-chrome-text-secondary">
-              {voiceError || (voiceResponseDelayMs === null
-                ? "Listening... click Send when you are ready."
-                : "Listening... pause briefly to send the message automatically.")}
-            </p>
+            <div className="flex items-center gap-2 text-xs text-chrome-text-secondary">
+              <p>
+                {voiceError || (voiceResponseDelayMs === null
+                  ? "Listening... click Send when you are ready."
+                  : "Listening... pause briefly to send the message automatically.")}
+              </p>
+              {ttsErrorDetails && (
+                <Button
+                  type="button"
+                  size="xs"
+                  color="mono"
+                  variant="ghost"
+                  iconLeft={<CircleHelp />}
+                  onClick={() => setIsTtsErrorModalOpen(true)}
+                >
+                  ?
+                </Button>
+              )}
+            </div>
           )}
         </div>
       </div>
+      {isTtsErrorModalOpen && ttsErrorDetails && (
+        <Modal
+          title="Speech playback error"
+          onClose={() => setIsTtsErrorModalOpen(false)}
+          className="max-w-2xl"
+        >
+          <div className="space-y-4 text-sm text-chrome-text-primary">
+            <p>{ttsErrorDetails.message}</p>
+            <div className="grid grid-cols-2 gap-3 text-xs text-chrome-text-secondary">
+              <div>
+                <strong className="text-chrome-text-primary">Code:</strong> {ttsErrorDetails.code}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">Stage:</strong> {ttsErrorDetails.stage}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">Chunk:</strong> {ttsErrorDetails.chunkIndex}/{ttsErrorDetails.totalChunks}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">Retry:</strong> {ttsErrorDetails.retryCount}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">Voice:</strong> {ttsErrorDetails.voiceName}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">Lang:</strong> {ttsErrorDetails.lang}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">Voice URI:</strong> {ttsErrorDetails.voiceUri || "(browser default)"}
+              </div>
+              <div>
+                <strong className="text-chrome-text-primary">At:</strong> {ttsErrorDetails.timestamp}
+              </div>
+            </div>
+            <div className="rounded border border-chrome-border bg-chrome-bg-secondary p-3 text-xs text-chrome-text-secondary">
+              <p className="mb-2 font-medium text-chrome-text-primary">Speech engine state</p>
+              <pre className="overflow-x-auto whitespace-pre-wrap">{JSON.stringify(ttsErrorDetails.synthState, null, 2)}</pre>
+            </div>
+            <div className="rounded border border-chrome-border bg-chrome-bg-secondary p-3 text-xs text-chrome-text-secondary">
+              <p className="mb-2 font-medium text-chrome-text-primary">Current chunk</p>
+              <pre className="overflow-x-auto whitespace-pre-wrap">{ttsErrorDetails.chunk || "(empty)"}</pre>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

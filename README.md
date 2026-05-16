@@ -71,6 +71,12 @@ For active development with automatic rebuilding:
 pnpm run dev
 ```
 
+To debug the voice engine outside the extension side panel:
+
+```bash
+pnpm run dev:web
+```
+
 To run a guided manual test for the voice integration while `pnpm dev` is running:
 
 ```bash
@@ -85,7 +91,7 @@ pnpm run voice:wizard
 
 ### Voice Interaction
 
-The sidebar chat now supports local voice input with automatic pause detection.
+The sidebar chat now supports local voice input with automatic pause detection and local speech synthesis for assistant replies.
 
 - Click the microphone button next to the chat input to start listening.
 - The extension requests microphone access directly from the side panel.
@@ -93,6 +99,8 @@ The sidebar chat now supports local voice input with automatic pause detection.
 - If `Voice pause` is set to a time value, the assistant automatically sends the current spoken segment after that amount of silence.
 - If `Voice pause` is set to `Manual`, the microphone stays active and nothing is sent until you press `Send`.
 - While the assistant is responding, new speech can interrupt the current generation and replace it with a newer voice request.
+- Assistant replies can be spoken aloud with browser `speechSynthesis`, either manually per message or automatically.
+- Automatic speech can start while the assistant is still generating text, instead of waiting for the full reply.
 - The microphone tries to remain active across browser-driven `SpeechRecognition` restarts and only stops when:
     - you click the stop button,
     - microphone access is denied or unavailable,
@@ -103,9 +111,24 @@ The sidebar chat now supports local voice input with automatic pause detection.
 The sidebar header includes a `Voice pause` selector:
 
 - `Manual`: never auto-send spoken text
-- `1.5s`, `2.5s`, `4.0s`, `6.0s`: auto-send after that amount of silence
+- `0.5s`, `1.0s`, `1.5s`, `2.5s`, `4.0s`, `6.0s`: auto-send after that amount of silence
+
+The same header also includes speech output settings:
+
+- `Speak replies`: automatically read assistant responses aloud
+- `Speech style`: apply local prosody presets such as `Natural`, `Expressive`, `Calm`, and `Narrator`
+- `Voice`: choose the browser voice used for reply playback
+- `Test voice`: run a standalone voice check without sending a chat message
 
 The selected value is saved in `chrome.storage.local` and reused on the next session.
+
+#### Voice Output Debugging
+
+For easier TTS debugging outside the Chrome side panel, a standalone web page is available at `web-debug.html`.
+
+- Start it with `pnpm run dev:web`
+- It reuses the same local TTS engine code as the extension
+- It includes full-text playback, simulated streaming playback, live engine state, and raw TTS error details
 
 #### Local Voice Intent Classification
 

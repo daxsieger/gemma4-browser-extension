@@ -48,6 +48,11 @@ export const TEXT_GENERATION_ID = "gemma4E2B";
 export const FEATURE_EXTRACTION_ID = "allMiniLM";
 export const DEFAULT_VOICE_RESPONSE_DELAY_MS = 2500;
 export const VOICE_RESPONSE_DELAY_STORAGE_KEY = "voiceResponseDelayMs";
+export const DEFAULT_TTS_AUTOPLAY = true;
+export const DEFAULT_TTS_STYLE = "natural";
+export const TTS_AUTOPLAY_STORAGE_KEY = "ttsAutoplay";
+export const TTS_STYLE_STORAGE_KEY = "ttsStyle";
+export const TTS_VOICE_URI_STORAGE_KEY = "ttsVoiceUri";
 
 export const REQUIRED_MODEL_IDS = [
   MODELS[FEATURE_EXTRACTION_ID].modelId,

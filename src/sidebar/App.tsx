@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 
 import {
+  DEFAULT_TTS_AUTOPLAY,
+  DEFAULT_TTS_STYLE,
   DEFAULT_VOICE_RESPONSE_DELAY_MS,
+  TTS_AUTOPLAY_STORAGE_KEY,
+  TTS_STYLE_STORAGE_KEY,
+  TTS_VOICE_URI_STORAGE_KEY,
   VOICE_RESPONSE_DELAY_STORAGE_KEY,
 } from "../shared/constants.ts";
 import {
@@ -10,6 +15,7 @@ import {
   ResponseStatus,
 } from "../shared/types.ts";
 import Chat from "./chat/Chat.tsx";
+import { isTtsStyle, type TtsStyle } from "./chat/tts.ts";
 import SettingsHeader from "./components/SettingsHeader.tsx";
 import { Button, Loader, Message, Slider } from "./theme";
 import { formatBytes } from "./utils/format.ts";
@@ -30,6 +36,11 @@ export default function App() {
   const [voiceResponseDelayMs, setVoiceResponseDelayMs] = useState<number | null>(
     DEFAULT_VOICE_RESPONSE_DELAY_MS
   );
+  const [ttsAutoplay, setTtsAutoplay] = useState<boolean>(DEFAULT_TTS_AUTOPLAY);
+  const [ttsStyle, setTtsStyle] = useState<TtsStyle>(
+    DEFAULT_TTS_STYLE as TtsStyle
+  );
+  const [ttsVoiceUri, setTtsVoiceUri] = useState<string>("");
   const [downloadingModels, setDownloadingModels] = useState<
     Record<string, number>
   >({});
@@ -48,6 +59,21 @@ export default function App() {
       if (Number.isFinite(savedDelay) && savedDelay > 0) {
         setVoiceResponseDelayMs(savedDelay);
       }
+
+      if (typeof result[TTS_AUTOPLAY_STORAGE_KEY] === "boolean") {
+        setTtsAutoplay(result[TTS_AUTOPLAY_STORAGE_KEY] as boolean);
+      }
+
+      if (
+        typeof result[TTS_STYLE_STORAGE_KEY] === "string" &&
+        isTtsStyle(result[TTS_STYLE_STORAGE_KEY] as string)
+      ) {
+        setTtsStyle(result[TTS_STYLE_STORAGE_KEY] as TtsStyle);
+      }
+
+      if (typeof result[TTS_VOICE_URI_STORAGE_KEY] === "string") {
+        setTtsVoiceUri(result[TTS_VOICE_URI_STORAGE_KEY] as string);
+      }
     });
   }, []);
 
@@ -56,6 +82,21 @@ export default function App() {
     chrome.storage.local.set({
       [VOICE_RESPONSE_DELAY_STORAGE_KEY]: delayMs ?? "manual",
     });
+  };
+
+  const handleTtsAutoplayChange = (enabled: boolean) => {
+    setTtsAutoplay(enabled);
+    chrome.storage.local.set({ [TTS_AUTOPLAY_STORAGE_KEY]: enabled });
+  };
+
+  const handleTtsStyleChange = (style: TtsStyle) => {
+    setTtsStyle(style);
+    chrome.storage.local.set({ [TTS_STYLE_STORAGE_KEY]: style });
+  };
+
+  const handleTtsVoiceUriChange = (voiceUri: string) => {
+    setTtsVoiceUri(voiceUri);
+    chrome.storage.local.set({ [TTS_VOICE_URI_STORAGE_KEY]: voiceUri });
   };
 
   useEffect(() => {
@@ -168,9 +209,20 @@ export default function App() {
       <SettingsHeader
         voiceResponseDelayMs={voiceResponseDelayMs}
         onVoiceResponseDelayChange={handleVoiceResponseDelayChange}
+        ttsAutoplay={ttsAutoplay}
+        onTtsAutoplayChange={handleTtsAutoplayChange}
+        ttsStyle={ttsStyle}
+        onTtsStyleChange={handleTtsStyleChange}
+        ttsVoiceUri={ttsVoiceUri}
+        onTtsVoiceUriChange={handleTtsVoiceUriChange}
       />
       <main className="flex-1 overflow-y-auto bg-chrome-bg-primary">
-        <Chat voiceResponseDelayMs={voiceResponseDelayMs} />
+        <Chat
+          voiceResponseDelayMs={voiceResponseDelayMs}
+          ttsAutoplay={ttsAutoplay}
+          ttsStyle={ttsStyle}
+          ttsVoiceUri={ttsVoiceUri}
+        />
       </main>
     </div>
   );
