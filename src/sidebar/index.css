@@ -58,3 +58,38 @@ body {
   background-color: #202124;
   color: #e8eaed;
 }
+
+@keyframes voice-response-progress {
+  from {
+    width: 100%;
+  }
+
+  to {
+    width: 0%;
+  }
+}
+
+.voice-response-progress {
+  width: 100%;
+  animation: voice-response-progress 2500ms linear forwards;
+}
+
+.voice-response-progress-1500 {
+  width: 100%;
+  animation: voice-response-progress 1500ms linear forwards;
+}
+
+.voice-response-progress-2500 {
+  width: 100%;
+  animation: voice-response-progress 2500ms linear forwards;
+}
+
+.voice-response-progress-4000 {
+  width: 100%;
+  animation: voice-response-progress 4000ms linear forwards;
+}
+
+.voice-response-progress-6000 {
+  width: 100%;
+  animation: voice-response-progress 6000ms linear forwards;
+}

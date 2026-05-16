@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
 import {
+  DEFAULT_VOICE_RESPONSE_DELAY_MS,
+  VOICE_RESPONSE_DELAY_STORAGE_KEY,
+} from "../shared/constants.ts";
+import {
   BackgroundMessages,
   BackgroundTasks,
   ResponseStatus,
@@ -23,9 +27,36 @@ export default function App() {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [error, setError] = useState<string | null>(null);
   const [modelSize, setModelSize] = useState<number>(0);
+  const [voiceResponseDelayMs, setVoiceResponseDelayMs] = useState<number | null>(
+    DEFAULT_VOICE_RESPONSE_DELAY_MS
+  );
   const [downloadingModels, setDownloadingModels] = useState<
     Record<string, number>
   >({});
+
+  useEffect(() => {
+    chrome.storage.local.get([VOICE_RESPONSE_DELAY_STORAGE_KEY], (result) => {
+      const savedValue = result[VOICE_RESPONSE_DELAY_STORAGE_KEY];
+
+      if (savedValue === "manual") {
+        setVoiceResponseDelayMs(null);
+        return;
+      }
+
+      const savedDelay = Number(savedValue);
+
+      if (Number.isFinite(savedDelay) && savedDelay > 0) {
+        setVoiceResponseDelayMs(savedDelay);
+      }
+    });
+  }, []);
+
+  const handleVoiceResponseDelayChange = (delayMs: number | null) => {
+    setVoiceResponseDelayMs(delayMs);
+    chrome.storage.local.set({
+      [VOICE_RESPONSE_DELAY_STORAGE_KEY]: delayMs ?? "manual",
+    });
+  };
 
   useEffect(() => {
     setStatus(AppStatus.CHECKING);
@@ -134,9 +165,12 @@ export default function App() {
 
   return (
     <div className="h-full w-full flex flex-col">
-      <SettingsHeader />
+      <SettingsHeader
+        voiceResponseDelayMs={voiceResponseDelayMs}
+        onVoiceResponseDelayChange={handleVoiceResponseDelayChange}
+      />
       <main className="flex-1 overflow-y-auto bg-chrome-bg-primary">
-        <Chat />
+        <Chat voiceResponseDelayMs={voiceResponseDelayMs} />
       </main>
     </div>
   );

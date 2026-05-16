@@ -46,6 +46,8 @@ export const MODELS: Record<
 
 export const TEXT_GENERATION_ID = "gemma4E2B";
 export const FEATURE_EXTRACTION_ID = "allMiniLM";
+export const DEFAULT_VOICE_RESPONSE_DELAY_MS = 2500;
+export const VOICE_RESPONSE_DELAY_STORAGE_KEY = "voiceResponseDelayMs";
 
 export const REQUIRED_MODEL_IDS = [
   MODELS[FEATURE_EXTRACTION_ID].modelId,
